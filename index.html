@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Town Explorer Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a202c;
+            touch-action: none;
+        }
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: block; /* Changed to block for full viewport canvas */
+        }
+        canvas {
+            background-color: #78a840; /* Grass color */
+            display: block;
+            width: 100%;
+            height: 100%;
+            image-rendering: pixelated;
+        }
+        #d-pad {
+            display: none;
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            gap: 15px;
+            z-index: 20;
+        }
+        .d-btn {
+            width: 60px;
+            height: 60px;
+            background: rgba(255,255,255,0.2);
+            border: 2px solid rgba(255,255,255,0.6);
+            border-radius: 15px;
+            color: white;
+            font-weight: bold;
+            font-size: 24px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            user-select: none;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .d-btn:active {
+            background: rgba(255,255,255,0.6);
+            transform: translateY(2px);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+        @media (max-width: 768px) {
+            #d-pad { display: grid; grid-template-columns: 60px 60px 60px; grid-template-rows: 60px 60px; }
+            #btn-up { grid-column: 2; grid-row: 1; }
+            #btn-left { grid-column: 1; grid-row: 2; }
+            #btn-down { grid-column: 2; grid-row: 2; }
+            #btn-right { grid-column: 3; grid-row: 2; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- UI Overlay for Messages -->
+        <div id="ui-overlay" class="absolute top-8 left-1/2 transform -translate-x-1/2 z-10 w-11/12 max-w-lg transition-opacity duration-300 opacity-0 pointer-events-none">
+            <div class="bg-gray-900 border-4 border-gray-200 rounded-lg p-5 shadow-2xl flex items-center justify-center text-center">
+                <p id="message-text" class="text-white font-mono text-xl leading-relaxed"></p>
+            </div>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+
+        <!-- On-screen controls for Touch Devices -->
+        <div id="d-pad">
+            <div id="btn-up" class="d-btn" data-key="ArrowUp">↑</div>
+            <div id="btn-left" class="d-btn" data-key="ArrowLeft">←</div>
+            <div id="btn-down" class="d-btn" data-key="ArrowDown">↓</div>
+            <div id="btn-right" class="d-btn" data-key="ArrowRight">→</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const uiOverlay = document.getElementById('ui-overlay');
+        const messageText = document.getElementById('message-text');
+
+        const playerImg = new Image();
+        playerImg.src = 'character.png';
+
+        // Hand-drawn art assets
+        function loadImg(src) { const i = new Image(); i.src = src; return i; }
+        const cottageImg = loadImg('house_cottage.png');
+        const witchImg = loadImg('house_witch.png');
+        const lampImg = loadImg('lamp.png');
+        const bushImg = loadImg('bush.png');
+        const tuftImg = loadImg('tuft.png');
+        const flowersImg = loadImg('flowers.png');
+        const benchImg = loadImg('bench.png');
+        const pavementImg = loadImg('pavement_tile.png');
+        let pavementPattern = null;
+        pavementImg.onload = () => { pavementPattern = ctx.createPattern(pavementImg, 'repeat'); };
+
+        // Virtual World Bounds (much larger than the screen)
+        const WORLD_WIDTH = 1850;
+        const WORLD_HEIGHT = 1740;
+
+        // Resize canvas to fill window
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        const keys = {
+            up: false, left: false, down: false, right: false
+        };
+
+        const player = {
+            x: 1085 - 50,
+            y: 1180, // Spawn safely below the fountain
+            w: 100, // Increased width for the image sprite
+            h: 120, // Increased height for the image sprite
+            speed: 5,
+            isMoving: false, // Track movement for the waddle animation
+            facingLeft: false // Track which way the player is facing
+        };
+
+        const camera = {
+            x: 0,
+            y: 0
+        };
+
+        const forest = { x: 0, y: 0, w: WORLD_WIDTH, h: 250, color: '#2c5e1a' };
+        
+        const fountain = { x: 1085, y: 1000, r: 60, color: '#3498db', outline: '#2980b9' };
+
+        // Spread out 5 houses
+        const houses = [
+            { id: 1, x: 485, y: 500, w: 160, h: 120, color: '#8e44ad', roof: '#732d91', img: cottageImg, spriteW: 190 },
+            { id: 2, x: 1525, y: 500, w: 160, h: 120, color: '#e67e22', roof: '#d35400', img: cottageImg, spriteW: 190 },
+            { id: 3, x: 485, y: 1300, w: 160, h: 120, color: '#f1c40f', roof: '#f39c12', img: cottageImg, spriteW: 190 },
+            { id: 4, x: 1525, y: 1300, w: 160, h: 120, color: '#16a085', roof: '#1abc9c', img: cottageImg, spriteW: 190 },
+            { id: 5, x: 185, y: 900, w: 160, h: 120, color: '#e84393', roof: '#d63031', img: witchImg, spriteW: 230 }
+        ];
+
+        // Solid (collision) area of each house = the base of its sprite
+        houses.forEach(h => {
+            const hw = Math.round(h.spriteW * 0.85);
+            h.hit = { x: h.x + h.w / 2 - hw / 2, y: h.y, w: hw, h: h.h };
+        });
+
+        // Decorations: x = centre, y = ground line (bottom of the sprite), w = drawn width
+        // hitW / hitH = the small solid area at the base that the player can't walk through
+        const props = [
+            // Lamp posts beside the main paths
+            { img: lampImg, x: 1020, y: 560,  w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 1150, y: 560,  w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 1020, y: 840,  w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 1150, y: 840,  w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 1020, y: 1330, w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 1150, y: 1330, w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 785,  y: 612,  w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 1385, y: 612,  w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 785,  y: 1412, w: 52, hitW: 18, hitH: 10 },
+            { img: lampImg, x: 1385, y: 1412, w: 52, hitW: 18, hitH: 10 },
+            // Benches on the grass facing the paths
+            { img: benchImg, x: 895, y: 800,  w: 120, hitW: 96, hitH: 12 },
+            { img: benchImg, x: 1275, y: 800,  w: 120, hitW: 96, hitH: 12 },
+            { img: benchImg, x: 925, y: 1250, w: 120, hitW: 96, hitH: 12 },
+            { img: benchImg, x: 1245, y: 1250, w: 120, hitW: 96, hitH: 12 }
+        ];
+        props.forEach(pr => {
+            pr.hit = { x: pr.x - pr.hitW / 2, y: pr.y - pr.hitH, w: pr.hitW, h: pr.hitH };
+        });
+
+        // Pathways definitions (x, y, w, h)
+        const pathColor = '#a39b8c'; // Dirt/Cobblestone base color
+        const pathWidth = 80;
+        const paths = [
+            // Main Vertical (from forest edge to bottom of town)
+            { x: 1085 - pathWidth/2, y: 200, w: pathWidth, h: 1400 },
+            // Main Horizontal Top (Connecting House 1 and 2 to center)
+            { x: 565, y: 620, w: 1040, h: pathWidth },
+            // Main Horizontal Bottom (Connecting House 3 and 4 to center)
+            { x: 565, y: 1420, w: 1040, h: pathWidth },
+            // Branch to House 5
+            { x: 265, y: 1020, w: 800, h: pathWidth }
+        ];
+
+
+        // Door Triggers
+        const doors = houses.map(house => ({
+            houseId: house.id,
+            x: house.x + house.w / 2 - 25,
+            y: house.y + house.h, 
+            w: 50,
+            h: 20,
+            color: '#7f8c8d'
+        }));
+
+        // ---------- Scattered grass decorations (seeded, so the map is the same every time) ----------
+        function mulberry32(a) {
+            return function () {
+                a |= 0; a = a + 0x6D2B79F5 | 0;
+                let t = Math.imul(a ^ a >>> 15, 1 | a);
+                t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+                return ((t ^ t >>> 14) >>> 0) / 4294967296;
+            };
+        }
+        const rnd = mulberry32(2024);
+
+        function nearPath(x, y, pad) {
+            return paths.some(p => x > p.x - pad && x < p.x + p.w + pad && y > p.y - pad && y < p.y + p.h + pad);
+        }
+        function blocked(x, y, pathPad, spacing) {
+            if (y < 290) return true;                                        // forest strip
+            if (nearPath(x, y, pathPad)) return true;                        // paths
+            for (const h of houses) {                                        // houses (whole sprite)
+                if (x > h.x - 70 && x < h.x + h.w + 70 && y > h.y - 190 && y < h.y + h.h + 70) return true;
+            }
+            if (Math.hypot(x - fountain.x, y - fountain.y) < fountain.r + 80) return true;   // fountain
+            for (const pr of props) {                                        // lamps, benches, bushes
+                if (Math.abs(x - pr.x) < pr.w / 2 + spacing && y < pr.y + spacing && y > pr.y - 110) return true;
+            }
+            if (Math.abs(x - (player.x + player.w / 2)) < 90 && Math.abs(y - (player.y + player.h)) < 60) return true; // spawn
+            return false;
+        }
+
+        // A few bushes (solid, sorted with the player like the houses)
+        let bushTries = 0, bushCount = 0;
+        while (bushCount < 12 && bushTries < 2000) {
+            bushTries++;
+            const x = 60 + rnd() * (WORLD_WIDTH - 120);
+            const y = 330 + rnd() * (WORLD_HEIGHT - 400);
+            if (blocked(x, y, 60, 90)) continue;
+            const w = 80 + rnd() * 40;
+            props.push({ img: bushImg, x: x, y: y, w: w, hit: { x: x - w * 0.32, y: y - 12, w: w * 0.64, h: 12 } });
+            bushCount++;
+        }
+
+        // Ground decorations (not solid): loose grass tufts, flower patches, and tufts along the path edges
+        const decor = [];
+        let dTries = 0;
+        while (decor.length < 44 && dTries < 4000) {
+            dTries++;
+            const x = 40 + rnd() * (WORLD_WIDTH - 80);
+            const y = 310 + rnd() * (WORLD_HEIGHT - 340);
+            if (blocked(x, y, 24, 20)) continue;
+            const isFlower = rnd() < 0.28;
+            decor.push({ img: isFlower ? flowersImg : tuftImg, x: x, y: y, w: isFlower ? 46 : 34 });
+        }
+        let eTries = 0, edgeCount = 0;
+        while (edgeCount < 36 && eTries < 4000) {
+            eTries++;
+            const p = paths[Math.floor(rnd() * paths.length)];
+            const vertical = p.h > p.w;
+            const side = rnd() < 0.5 ? -1 : 1;
+            const along = rnd();
+            const off = 4 + rnd() * 14;
+            let x, y;
+            if (vertical) { x = side < 0 ? p.x - off : p.x + p.w + off; y = p.y + along * p.h; }
+            else { y = side < 0 ? p.y - off + 6 : p.y + p.h + off + 6; x = p.x + along * p.w; }
+            if (nearPath(x, y, 2)) continue;           // don't put it on top of another path
+            if (blocked(x, y, -999, 14)) continue;      // (path padding disabled: we WANT it near the path)
+            decor.push({ img: tuftImg, x: x, y: y, w: 30 });
+            edgeCount++;
+        }
+        decor.sort((a, b) => a.y - b.y);
+
+        let activeMessage = "";
+
+        function checkRectCollision(r1, r2) {
+            return (
+                r1.x < r2.x + r2.w &&
+                r1.x + r1.w > r2.x &&
+                r1.y < r2.y + r2.h &&
+                r1.y + r1.h > r2.y
+            );
+        }
+
+        function checkCircleRectCollision(circle, rect) {
+            let testX = circle.x;
+            let testY = circle.y;
+            if (circle.x < rect.x) testX = rect.x;      
+            else if (circle.x > rect.x + rect.w) testX = rect.x + rect.w;   
+            if (circle.y < rect.y) testY = rect.y;      
+            else if (circle.y > rect.y + rect.h) testY = rect.y + rect.h;   
+
+            let distX = circle.x - testX;
+            let distY = circle.y - testY;
+            return Math.sqrt((distX*distX) + (distY*distY)) <= circle.r;
+        }
+
+        function isCollidingWithObstacles(testPlayerX, testPlayerY) {
+            const testRect = { x: testPlayerX, y: testPlayerY, w: player.w, h: player.h };
+            // Obstacles only care about the player's FEET (small box at the bottom of the sprite),
+            // so you can stand right in front of lamps, benches and houses
+            const feet = { x: testPlayerX + player.w / 2 - 22, y: testPlayerY + player.h - 18, w: 44, h: 18 };
+
+            // World boundaries
+            if (testRect.x < 0 || testRect.x + testRect.w > WORLD_WIDTH ||
+                testRect.y < 0 || testRect.y + testRect.h > WORLD_HEIGHT) {
+                return true;
+            }
+
+            // Houses
+            for (let house of houses) {
+                if (checkRectCollision(feet, house.hit)) return true;
+            }
+
+            // Lamp posts and benches
+            for (let pr of props) {
+                if (checkRectCollision(feet, pr.hit)) return true;
+            }
+
+            // Fountain
+            if (checkCircleRectCollision(fountain, feet)) return true;
+
+            return false;
+        }
+
+        function update() {
+            let dx = 0;
+            let dy = 0;
+
+            if (keys.up) dy -= player.speed;
+            if (keys.down) dy += player.speed;
+            if (keys.left) dx -= player.speed;
+            if (keys.right) dx += player.speed;
+
+            if (dx !== 0 && dy !== 0) {
+                const length = Math.sqrt(dx * dx + dy * dy);
+                dx = (dx / length) * player.speed;
+                dy = (dy / length) * player.speed;
+            }
+
+            player.isMoving = (dx !== 0 || dy !== 0);
+
+            // Update facing direction based on horizontal movement
+            if (dx < 0) player.facingLeft = true;
+            if (dx > 0) player.facingLeft = false;
+
+            if (dx !== 0 && !isCollidingWithObstacles(player.x + dx, player.y)) player.x += dx;
+            if (dy !== 0 && !isCollidingWithObstacles(player.x, player.y + dy)) player.y += dy;
+
+            // Update Camera Position to follow player
+            camera.x = player.x + player.w / 2 - canvas.width / 2;
+            camera.y = player.y + player.h / 2 - canvas.height / 2;
+
+            // Clamp camera to world bounds
+            if (camera.x < 0) camera.x = 0;
+            if (camera.y < 0) camera.y = 0;
+            if (camera.x > WORLD_WIDTH - canvas.width) camera.x = WORLD_WIDTH - canvas.width;
+            if (camera.y > WORLD_HEIGHT - canvas.height) camera.y = WORLD_HEIGHT - canvas.height;
+
+            // Trigger Zones
+            let currentTriggerMessage = "";
+            const playerRect = { x: player.x, y: player.y, w: player.w, h: player.h };
+
+            if (checkRectCollision(playerRect, forest)) {
+                currentTriggerMessage = "You have entered the Ancient Forest! Area locked.";
+            }
+
+            for (let door of doors) {
+                if (checkRectCollision(playerRect, door)) {
+                    currentTriggerMessage = `You are at the door of House ${door.houseId}.`;
+                }
+            }
+
+            // UI Overlay Toggle
+            if (currentTriggerMessage !== activeMessage) {
+                activeMessage = currentTriggerMessage;
+                if (activeMessage !== "") {
+                    messageText.innerText = activeMessage;
+                    uiOverlay.classList.remove('opacity-0');
+                    uiOverlay.classList.add('opacity-100');
+                } else {
+                    uiOverlay.classList.remove('opacity-100');
+                    uiOverlay.classList.add('opacity-0');
+                }
+            }
+        }
+
+        function drawHouse(house) {
+            // Hand-drawn sprite: centred on the house, bottom sits just below the door line
+            if (house.img && house.img.complete && house.img.naturalHeight !== 0) {
+                const sw = house.spriteW;
+                const sh = sw * house.img.naturalHeight / house.img.naturalWidth;
+                const bottom = house.y + house.h + 10;
+                ctx.drawImage(house.img, house.x + house.w / 2 - sw / 2, bottom - sh, sw, sh);
+                return;
+            }
+            // Fallback: original placeholder drawing
+            ctx.fillStyle = house.color;
+            ctx.fillRect(house.x, house.y, house.w, house.h);
+            
+            // Roof
+            ctx.fillStyle = house.roof;
+            ctx.beginPath();
+            ctx.moveTo(house.x - 15, house.y + 20);
+            ctx.lineTo(house.x + house.w / 2, house.y - 40);
+            ctx.lineTo(house.x + house.w + 15, house.y + 20);
+            ctx.closePath();
+            ctx.fill();
+
+            // Windows
+            ctx.fillStyle = '#ecf0f1';
+            ctx.fillRect(house.x + 25, house.y + 40, 35, 35); 
+            ctx.fillRect(house.x + house.w - 60, house.y + 40, 35, 35); 
+            
+            ctx.fillStyle = '#bdc3c7';
+            ctx.fillRect(house.x + 40, house.y + 40, 5, 35);
+            ctx.fillRect(house.x + 25, house.y + 55, 35, 5);
+            ctx.fillRect(house.x + house.w - 45, house.y + 40, 5, 35);
+            ctx.fillRect(house.x + house.w - 60, house.y + 55, 35, 5);
+        }
+
+        function drawProp(pr) {
+            if (!(pr.img.complete && pr.img.naturalHeight !== 0)) return;
+            const h = pr.w * pr.img.naturalHeight / pr.img.naturalWidth;
+            ctx.drawImage(pr.img, pr.x - pr.w / 2, pr.y - h, pr.w, h);
+        }
+
+        function drawPaths() {
+            // Dark outline, then the flagstone texture on top
+            ctx.fillStyle = '#2a2b1c';
+            paths.forEach(p => ctx.fillRect(p.x - 4, p.y - 4, p.w + 8, p.h + 8));
+            ctx.fillStyle = pavementPattern || pathColor;
+            paths.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
+        }
+
+        function drawDecor() {
+            decor.forEach(d => {
+                if (!(d.img.complete && d.img.naturalHeight !== 0)) return;
+                const h = d.w * d.img.naturalHeight / d.img.naturalWidth;
+                ctx.drawImage(d.img, d.x - d.w / 2, d.y - h, d.w, h);
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Apply Camera Translation
+            ctx.save();
+            ctx.translate(-camera.x, -camera.y);
+
+            // Draw Paths (Bottom Layer)
+            drawPaths();
+
+            // Draw Forest
+            ctx.fillStyle = forest.color;
+            ctx.fillRect(forest.x, forest.y, forest.w, forest.h);
+            
+            // Tree texture
+            ctx.fillStyle = '#1e4010';
+            for(let i = 0; i < WORLD_WIDTH; i += 80) {
+                ctx.beginPath(); ctx.arc(i + 40, 60, 45, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(i, 130, 40, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(i + 60, 190, 35, 0, Math.PI * 2); ctx.fill();
+            }
+
+            drawDecor();
+
+            // (Door trigger zones are invisible now - the house sprites have their own doors)
+
+            // Draw Fountain
+            ctx.fillStyle = fountain.outline;
+            ctx.beginPath(); ctx.arc(fountain.x, fountain.y, fountain.r + 8, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = fountain.color;
+            ctx.beginPath(); ctx.arc(fountain.x, fountain.y, fountain.r, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#bdc3c7';
+            ctx.fillRect(fountain.x - 12, fountain.y - 25, 24, 40);
+            ctx.beginPath(); ctx.arc(fountain.x, fountain.y - 25, 20, 0, Math.PI * 2); ctx.fill();
+
+            // Draw houses, lamps, benches and the player sorted by ground line,
+            // so the player walks behind things above him and in front of things below him
+            const drawables = [];
+            houses.forEach(h => drawables.push({ base: h.y + h.h + 10, draw: () => drawHouse(h) }));
+            props.forEach(pr => drawables.push({ base: pr.y, draw: () => drawProp(pr) }));
+            drawables.push({ base: player.y + player.h, draw: drawPlayer });
+            drawables.sort((a, b) => a.base - b.base);
+            drawables.forEach(d => d.draw());
+
+            // Restore canvas to screen coordinates
+            ctx.restore();
+        }
+
+        function drawPlayer() {
+            // Draw Player with Waddle Animation
+            ctx.save();
+            
+            // Translate context to the bottom-center of the player (the pivot point for feet)
+            ctx.translate(player.x + player.w / 2, player.y + player.h);
+            
+            // Flip the canvas horizontally if the player is facing left
+            if (player.facingLeft) {
+                ctx.scale(-1, 1);
+            }
+
+            if (player.isMoving) {
+                // South Park waddle: oscillate rotation using a sine wave based on time
+                const waddleAngle = Math.sin(Date.now() / 100) * 0.15; // 0.15 radians is ~8.5 degrees
+                ctx.rotate(waddleAngle);
+            }
+            
+            // Draw the character image if it has successfully loaded
+            if (playerImg.complete && playerImg.naturalHeight !== 0) {
+                // Offset drawing by -w/2 and -h so the pivot remains at the feet
+                ctx.drawImage(playerImg, -player.w / 2, -player.h, player.w, player.h);
+            } else {
+                // Fallback rendering in case the image is missing or still loading
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                ctx.beginPath(); ctx.ellipse(0, 0, player.w/1.4, 8, 0, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = '#e74c3c';
+                ctx.fillRect(-player.w / 2, -player.h, player.w, player.h);
+            }
+            
+            ctx.restore();
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function handleKey(e, isDown) {
+            if (!e.key) return; // Ensure key property exists
+            const k = e.key.toLowerCase();
+            
+            // Track if it's a movement key to prevent default scrolling
+            let isMovementKey = false;
+
+            if (k === 'w' || k === 'arrowup') { keys.up = isDown; isMovementKey = true; }
+            if (k === 'a' || k === 'arrowleft') { keys.left = isDown; isMovementKey = true; }
+            if (k === 's' || k === 'arrowdown') { keys.down = isDown; isMovementKey = true; }
+            if (k === 'd' || k === 'arrowright') { keys.right = isDown; isMovementKey = true; }
+
+            if (isMovementKey && isDown) {
+                e.preventDefault(); // Prevents page scrolling when using arrow keys
+            }
+        }
+
+        // Attach to document for better focus capturing inside browser frames
+        document.addEventListener('keydown', (e) => handleKey(e, true));
+        document.addEventListener('keyup', (e) => handleKey(e, false));
+
+        const dBtns = document.querySelectorAll('.d-btn');
+        dBtns.forEach(btn => {
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const key = btn.getAttribute('data-key').toLowerCase();
+                if (key === 'arrowup') keys.up = true;
+                if (key === 'arrowleft') keys.left = true;
+                if (key === 'arrowdown') keys.down = true;
+                if (key === 'arrowright') keys.right = true;
+                btn.style.background = 'rgba(255,255,255,0.6)';
+            });
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                const key = btn.getAttribute('data-key').toLowerCase();
+                if (key === 'arrowup') keys.up = false;
+                if (key === 'arrowleft') keys.left = false;
+                if (key === 'arrowdown') keys.down = false;
+                if (key === 'arrowright') keys.right = false;
+                btn.style.background = 'rgba(255,255,255,0.2)';
+            });
+        });
+
+        window.onload = () => {
+            gameLoop();
+        };
+    </script>
+</body>
+</html>
